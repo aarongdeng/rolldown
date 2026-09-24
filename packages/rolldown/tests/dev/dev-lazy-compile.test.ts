@@ -601,6 +601,71 @@ test(
   },
 );
 
+test(
+  'a lazy CommonJS import preserves its default export',
+  { timeout: TEST_TIMEOUT },
+  async ({ onTestFinished }) => {
+    const uniqueId = crypto.randomUUID().slice(0, 8);
+    const dir = path.join(import.meta.dirname, 'temp', `dev-lazy-cjs-interop-${uniqueId}`);
+    const pkg = path.join(dir, 'pkg');
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'main.js'),
+      `import CjsConstructor from './pkg/cjs.js';\n` +
+        `globalThis.staticVersion = CjsConstructor.version;\n` +
+        `globalThis.loadCjs = () => import('./pkg/cjs.js');\n`,
+    );
+    fs.writeFileSync(path.join(pkg, 'package.json'), `{ "name": "pkg", "main": "cjs.js" }\n`);
+    fs.writeFileSync(
+      path.join(pkg, 'cjs.js'),
+      `function CjsConstructor() {}\n` +
+        `CjsConstructor.version = '1.0.0';\n` +
+        `module.exports = CjsConstructor;\n`,
+    );
+
+    const engine = await dev(
+      {
+        input: path.join(dir, 'main.js'),
+        experimental: { devMode: { lazy: true, implement: '', skipCommonRuntimeInjection: true } },
+      },
+      { dir: path.join(dir, 'dist'), format: 'esm' },
+      {},
+    );
+
+    onTestFinished(async () => {
+      await engine.close();
+      delete (globalThis as Record<string, unknown>).staticVersion;
+      delete (globalThis as Record<string, unknown>).loadCjs;
+      if (!process.env.CI) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    await engine.run();
+    const entryCode = fs.readFileSync(path.join(dir, 'dist', 'main.js'), 'utf8');
+    expect(entryCode).toMatch(/registerModule\("[^"]*cjs\.js",\s*\w+,\s*false\)/);
+
+    const chunk = await engine.compileEntry(
+      `${path.join(pkg, 'cjs.js')}?rolldown-lazy=1`,
+      'client-without-session',
+    );
+    expect(chunk.code).toMatch(
+      /registerModule\(__rolldown_module_id__,\s*__rolldown_module__,\s*false\)/,
+    );
+
+    const { DevRuntime } = await import(import.meta.resolve('rolldown/experimental/runtime'));
+    const runtime = new DevRuntime('client-without-session');
+    runtime.hooks = { createModuleHotContext: () => ({}), onModuleCacheRemoval: () => {} };
+    vm.runInThisContext(`(__rolldown_runtime__) => {\n${chunk.code}\n}`)(runtime);
+
+    const realId = /registerFactory\("([^"]*cjs\.js)"/.exec(chunk.code)![1];
+    const namespace = await runtime.requestLazy(realId, async () => {});
+    expect(namespace.default).toBeTypeOf('function');
+    expect(namespace.default.version).toBe('1.0.0');
+    expect(namespace.version).toBe('1.0.0');
+  },
+);
+
 // A lazy boundary must stay lazy even when code splitting is off. Without code splitting the
 // finalizer's inline path would rewrite `import()` into an eager `(init_foo(), foo_exports)`,
 // pulling the module into the bundle — the opposite of lazy compilation. The empty proxy body
