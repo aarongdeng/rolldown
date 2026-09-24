@@ -9,12 +9,19 @@ class Module {
    * @type {string}
    */
   id;
+  /**
+   * `undefined` for ESM, otherwise the `isNodeMode` argument for `__toESM`.
+   * @type {boolean | undefined}
+   */
+  cjsInteropMode;
 
   /**
    * @param {string} id
+   * @param {boolean | undefined} cjsInteropMode
    */
-  constructor(id) {
+  constructor(id, cjsInteropMode) {
     this.id = id;
+    this.cjsInteropMode = cjsInteropMode;
   }
 
   get exports() {
@@ -147,9 +154,10 @@ export class DevRuntime {
   /**
    * @param {string} id
    * @param {{ exports: any }} [exportsHolder]
+   * @param {boolean} [cjsInteropMode]
    */
-  registerModule(id, exportsHolder = { exports: {} }) {
-    const module = new Module(id);
+  registerModule(id, exportsHolder = { exports: {} }, cjsInteropMode) {
+    const module = new Module(id, cjsInteropMode);
     module.exportsHolder = exportsHolder;
     this.moduleCache.set(id, module);
   }
@@ -251,15 +259,21 @@ export class DevRuntime {
       return pending;
     }
 
+    const initModule = () => {
+      const exports = this.initModule(id);
+      const cjsInteropMode = this.moduleCache.get(id)?.cjsInteropMode;
+      return cjsInteropMode === undefined ? exports : __toESM(exports, cjsInteropMode);
+    };
+
     // Factories outlive `removeModuleCache`, so an evicted module can be re-run without the
     // server — and must be, since the memo went with the cache entry. `Promise.resolve` keeps
     // a synchronous `initModule` throw from escaping the call site.
     const runnableHere = this.moduleCache.has(id) || this.factories.has(id);
     const promise = runnableHere
-      ? Promise.resolve().then(() => this.initModule(id))
+      ? Promise.resolve().then(initModule)
       : Promise.resolve()
           .then(fetchChunk)
-          .then(() => this.initModule(id));
+          .then(initModule);
 
     this.lazyRequests.set(id, promise);
     return promise;

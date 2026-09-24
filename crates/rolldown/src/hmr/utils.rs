@@ -44,9 +44,9 @@ pub trait HmrAstBuilder<'any, 'ast> {
     )
   }
 
-  /// `__rolldown_runtime__.registerModule(moduleId[, module])`
+  /// `__rolldown_runtime__.registerModule(moduleId[, module, cjsInteropMode])`
   fn create_register_module_stmt(&self) -> ast::Statement<'ast> {
-    let module_exports = match self.module().exports_kind {
+    let (module_exports, cjs_interop_mode) = match self.module().exports_kind {
       rolldown_common::ExportsKind::Esm => {
         let binding_name_for_namespace_object_ref_atom =
           self.binding_name_for_namespace_object_ref_atom();
@@ -57,29 +57,37 @@ pub trait HmrAstBuilder<'any, 'ast> {
         );
 
         // { exports: namespace }
-        Some(ast::Argument::new_object_expression(
-          SPAN,
-          [ast::ObjectPropertyKind::new_object_property(
+        (
+          Some(ast::Argument::new_object_expression(
             SPAN,
-            ast::PropertyKind::Init,
-            ast::PropertyKey::new_static_identifier(SPAN, "exports", &self.builder()),
-            namespace_object_ref_expr,
-            true,
-            false,
-            false,
+            [ast::ObjectPropertyKind::new_object_property(
+              SPAN,
+              ast::PropertyKind::Init,
+              ast::PropertyKey::new_static_identifier(SPAN, "exports", &self.builder()),
+              namespace_object_ref_expr,
+              true,
+              false,
+              false,
+              &self.builder(),
+            )],
             &self.builder(),
-          )],
-          &self.builder(),
-        ))
+          )),
+          None,
+        )
       }
-      rolldown_common::ExportsKind::CommonJs => {
+      rolldown_common::ExportsKind::CommonJs => (
         // `module`
-        Some(ast::Argument::new_identifier(SPAN, Self::cjs_module_name(), &self.builder()))
-      }
-      rolldown_common::ExportsKind::None => None,
+        Some(ast::Argument::new_identifier(SPAN, Self::cjs_module_name(), &self.builder())),
+        Some(ast::Argument::from(ast::Expression::new_boolean_literal(
+          SPAN,
+          self.module().def_format.is_commonjs(),
+          &self.builder(),
+        ))),
+      ),
+      rolldown_common::ExportsKind::None => (None, None),
     };
 
-    // __rolldown_runtime__.registerModule(moduleId[, module])
+    // __rolldown_runtime__.registerModule(moduleId[, module, cjsInteropMode])
     // moduleId is either `__rolldown_module_id__` (HMR/lazy path) or the stable-id
     // string literal (main-bundle path).
     let register_call = ast::Expression::new_call_expression(
@@ -87,7 +95,7 @@ pub trait HmrAstBuilder<'any, 'ast> {
       ast::Expression::new_identifier(SPAN, "__rolldown_runtime__.registerModule", &self.builder()),
       None,
       oxc::allocator::Vec::from_iter_in(
-        std::iter::once(self.module_id_argument()).chain(module_exports),
+        std::iter::once(self.module_id_argument()).chain(module_exports).chain(cjs_interop_mode),
         &self.builder(),
       ),
       false,
